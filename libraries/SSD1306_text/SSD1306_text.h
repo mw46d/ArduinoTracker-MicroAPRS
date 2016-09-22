@@ -69,6 +69,8 @@ class SSD1306_text {
   SSD1306_text(int8_t data, int8_t clk, int8_t dc, int8_t rst, int8_t cs)
     :data_(data), clk_(clk), dc_(dc), rst_(rst), cs_(cs) {}
 #endif
+  SSD1306_text(uint8_t i2caddr, int8_t rst = -1)
+    :data_(-1), clk_(-1), dc_(-1), rst_(rst), cs_(-1), i2caddr_(i2caddr) {}
 
   void init();
   void clear();
@@ -77,20 +79,21 @@ class SSD1306_text {
   size_t write(uint8_t c);
   size_t write(const char* s);
 #if !USE_SYSTEM_PRINT
-  void writeInt(int i);			// slightly smaller than system print()
+  void writeInt(int i);           // slightly smaller than system print()
 #endif
 
   void sendCommand(uint8_t c);
   void sendData(uint8_t c);
 
  private:
-  int8_t col_, row_;		// cursor position
-  uint8_t textSize_, textSpacing_;	// text size and horiz char spacing (pixels between)
-  int8_t data_, clk_, dc_, rst_, cs_;	// OLED pins
+  int8_t col_, row_;              // cursor position
+  uint8_t textSize_, textSpacing_; // text size and horiz char spacing (pixels between)
+  int8_t data_, clk_, dc_, rst_, cs_; // OLED pins
+  int8_t i2caddr_;
 
   volatile uint8_t *mosiport, *clkport, *csport, *dcport;
   uint8_t mosipinmask, clkpinmask, cspinmask, dcpinmask;
-  
+
   void spiWrite(uint8_t c);
 };
 

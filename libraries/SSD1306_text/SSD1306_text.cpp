@@ -13,6 +13,7 @@
 #include <avr/pgmspace.h>
 #include <SSD1306_text.h>
 #include "ssdfont.h"
+#include <Wire.h>
 #include <SPI.h>
 
 //------------------------------------------------------------------------------
@@ -21,34 +22,43 @@ void SSD1306_text::init() {
   row_ = 0;
   textSize_ = 1;
   textSpacing_ = 1;
-  
-  // set pin directions
-  pinMode(dc_, OUTPUT);
-  pinMode(rst_, OUTPUT);
-  pinMode(cs_, OUTPUT);
-  csport      = portOutputRegister(digitalPinToPort(cs_));
-  cspinmask   = digitalPinToBitMask(cs_);
-  dcport      = portOutputRegister(digitalPinToPort(dc_));
-  dcpinmask   = digitalPinToBitMask(dc_);
+
+  if (data_ != -1) {
+    // SPI Init
+    // set pin directions
+    pinMode(dc_, OUTPUT);
+    pinMode(rst_, OUTPUT);
+    pinMode(cs_, OUTPUT);
+    csport      = portOutputRegister(digitalPinToPort(cs_));
+    cspinmask   = digitalPinToBitMask(cs_);
+    dcport      = portOutputRegister(digitalPinToPort(dc_));
+    dcpinmask   = digitalPinToBitMask(dc_);
 
 #if  HW_SPI
-  SPI.begin();
-  SPI.setClockDivider(SPI_CLOCK_DIV2); // 8 MHz
+    SPI.begin();
+    SPI.setClockDivider(SPI_CLOCK_DIV2); // 8 MHz
 #else // bit twiddle SPI
-  pinMode(data_, OUTPUT);
-  pinMode(clk_, OUTPUT);
-  clkport     = portOutputRegister(digitalPinToPort(clk_));
-  clkpinmask  = digitalPinToBitMask(clk_);
-  mosiport    = portOutputRegister(digitalPinToPort(data_));
-  mosipinmask = digitalPinToBitMask(data_);
+    pinMode(data_, OUTPUT);
+    pinMode(clk_, OUTPUT);
+    clkport     = portOutputRegister(digitalPinToPort(clk_));
+    clkpinmask  = digitalPinToBitMask(clk_);
+    mosiport    = portOutputRegister(digitalPinToPort(data_));
+    mosipinmask = digitalPinToBitMask(data_);
 #endif
+  }
+  else {
+    // I2C Init
+    Wire.begin();
+  }
 
-  // Reset
-  digitalWrite(rst_, HIGH);
-  delay(1);
-  digitalWrite(rst_, LOW);
-  delay(10);
-  digitalWrite(rst_, HIGH);
+  if (rst_ >= 0) {
+    // Reset
+    digitalWrite(rst_, HIGH);
+    delay(1);
+    digitalWrite(rst_, LOW);
+    delay(10);
+    digitalWrite(rst_, HIGH);
+  }
 
   // Init sequence for 128x64 OLED module
   sendCommand(SSD1306_DISPLAYOFF);          // 0xAE
@@ -62,7 +72,7 @@ void SSD1306_text::init() {
   sendCommand(SSD1306_CHARGEPUMP);          // 0x8D
   sendCommand(0x14);
   sendCommand(SSD1306_MEMORYMODE);          // 0x20
-  sendCommand(0x00);			  // was: 0x2 page mode
+  sendCommand(0x00);                        // was: 0x2 page mode
   sendCommand(SSD1306_SEGREMAP | 0x1);
   sendCommand(SSD1306_COMSCANDEC);
   sendCommand(SSD1306_SETCOMPINS);          // 0xDA
@@ -75,9 +85,10 @@ void SSD1306_text::init() {
   sendCommand(0x40);
   sendCommand(SSD1306_DISPLAYALLON_RESUME); // 0xA4
   sendCommand(SSD1306_NORMALDISPLAY);       // 0xA6
-  
+
   sendCommand(SSD1306_DISPLAYON);//--turn on oled panel
 }
+
 //------------------------------------------------------------------------------
 // clear the screen
 void SSD1306_text::clear() {
@@ -89,15 +100,42 @@ void SSD1306_text::clear() {
   sendCommand(0); // Page start address (0 = reset)
   sendCommand(7); // Page end address
 
-  *csport |= cspinmask;
-  *dcport |= dcpinmask;
-  *csport &= ~cspinmask;
+  if (data_ != -1) {
+    *csport |= cspinmask;
+    *dcport |= dcpinmask;
+    *csport &= ~cspinmask;
 
-  for (uint16_t i=0; i<(SSD1306_LCDWIDTH*SSD1306_LCDHEIGHT/8); i++) {
-    spiWrite(0x00);
+    for (uint16_t i=0; i<(SSD1306_LCDWIDTH*SSD1306_LCDHEIGHT/8); i++) {
+      spiWrite(0x00);
+    }
+    *csport |= cspinmask;
   }
-  *csport |= cspinmask;
+  else {
+    // I2C
+#ifdef TWBR
+    // save I2C bitrate
+    uint8_t twbrbackup = TWBR;
+    TWBR = 12; // upgrade to 400KHz!
+#endif
+
+    for (uint16_t i = 0; i < (SSD1306_LCDWIDTH * SSD1306_LCDHEIGHT / 8); i++) {
+      // send a bunch of data in one xmission
+      Wire.beginTransmission(i2caddr_);
+      Wire.write(0x40);
+      for (uint8_t x = 0; x < 16; x++) {
+        Wire.write(0x00);
+        i++;
+      }
+      i--;
+      Wire.endTransmission();
+    }
+
+#ifdef TWBR
+    TWBR = twbrbackup;
+#endif
+  }
 }
+
 //------------------------------------------------------------------------------
 void SSD1306_text::setCursor(uint8_t row, uint8_t col) {
   if (row >= SSD1306_LCDHEIGHT/8) {
@@ -106,19 +144,21 @@ void SSD1306_text::setCursor(uint8_t row, uint8_t col) {
   if (col >= SSD1306_LCDWIDTH) {
     col = SSD1306_LCDWIDTH - 1;
   }
-  row_ = row;	// row is 8 pixels tall; must set to byte sized row
-  col_ = col;	// col is 1 pixel wide; can set to any pixel column
+  row_ = row;   // row is 8 pixels tall; must set to byte sized row
+  col_ = col;   // col is 1 pixel wide; can set to any pixel column
 
   sendCommand(SSD1306_SETLOWCOLUMN | (col & 0XF));
   sendCommand(SSD1306_SETHIGHCOLUMN | (col >> 4));
   sendCommand(SSD1306_SETSTARTPAGE | row);
 }
+
 //------------------------------------------------------------------------------
 size_t SSD1306_text::write(uint8_t c) {
-  if (textSize_ == 1) {		// dedicated code since it's 4x faster than scaling
-
-    if (col_ >= SSD1306_LCDWIDTH) return 0;
-    col_ += 7;	// x7 font
+  if (textSize_ == 1) {
+    // dedicated code since it's 4x faster than scaling
+    if (col_ >= SSD1306_LCDWIDTH)
+      return 0;
+    col_ += 7;  // x7 font
     if (c < 32 || c > 127) c = 127;
     c -= 32;
     const uint8_t *base = font + 5 * c;
@@ -128,16 +168,15 @@ size_t SSD1306_text::write(uint8_t c) {
     }
     for (uint8_t i=0; i<textSpacing_; i++) {
       if (col_ >= SSD1306_LCDWIDTH) break;
-      col_++; 
-      sendData(0);	// textSpacing_ pixels of blank space between characters
+      col_++;
+      sendData(0);    // textSpacing_ pixels of blank space between characters
     }
-
-  } else {                      // scale characters (up to 8X)
-
+  }
+  else {                      // scale characters (up to 8X)
     uint8_t sourceSlice, targetSlice, sourceBitMask, targetBitMask, extractedBit, targetBitCount;
     uint8_t startRow = row_;
     uint8_t startCol = col_;
-      
+
     for (uint8_t irow = 0; irow < textSize_; irow++) {
       if (row_+irow > SSD1306_LCDWIDTH - 1) break;
       if (irow > 0) setCursor(startRow+irow, startCol);
@@ -160,13 +199,31 @@ size_t SSD1306_text::write(uint8_t c) {
             if (targetBitMask == 0) break;
           }
         } while (targetBitMask != 0);
-        *csport |= cspinmask;
-        *dcport |= dcpinmask;
-        *csport &= ~cspinmask;
-        for (uint8_t i=0; i<textSize_; i++) {
-          spiWrite(targetSlice);
+        if (data_ != -1) {
+          *csport |= cspinmask;
+          *dcport |= dcpinmask;
+          *csport &= ~cspinmask;
+          for (uint8_t i=0; i<textSize_; i++) {
+            spiWrite(targetSlice);
+          }
+          *csport |= cspinmask;
         }
-        *csport |= cspinmask;
+        else {
+          // I2C
+          // send a bunch of data in one xmission
+          Wire.beginTransmission(i2caddr_);
+          Wire.write(0x40);
+          for (uint8_t i = 0; i < textSize_; i++) {
+            Wire.write(targetSlice);
+            if (i > 0 && i % 16 == 0 && i + 1 < textSize_) {
+              // We have to split the transmition
+              Wire.endTransmission();
+              Wire.beginTransmission(i2caddr_);
+              Wire.write(0x40);
+            }
+          }
+          Wire.endTransmission();
+        }
       }
     }
     setCursor(startRow, startCol + 5*textSize_ + textSpacing_);
@@ -193,20 +250,42 @@ void SSD1306_text::writeInt(int i) {	// slighly smaller than system print()
 #endif
 //------------------------------------------------------------------------------
 void SSD1306_text::sendCommand(uint8_t c) {
-  *csport |= cspinmask;
-  *dcport &= ~dcpinmask;
-  *csport &= ~cspinmask;
-  spiWrite(c);
-  *csport |= cspinmask;
+  if (data_ != -1) {
+    *csport |= cspinmask;
+    *dcport &= ~dcpinmask;
+    *csport &= ~cspinmask;
+    spiWrite(c);
+    *csport |= cspinmask;
+  }
+  else {
+    // I2C
+    uint8_t control = 0x00;
+    Wire.beginTransmission(i2caddr_);
+    Wire.write(control);
+    Wire.write(c);
+    Wire.endTransmission();
+  }
 }
+
 //------------------------------------------------------------------------------
 void SSD1306_text::sendData(uint8_t c) {
-  *csport |= cspinmask;
-  *dcport |= dcpinmask;
-  *csport &= ~cspinmask;
-  spiWrite(c);
-  *csport |= cspinmask;
+  if (data_ != -1) {
+    *csport |= cspinmask;
+    *dcport |= dcpinmask;
+    *csport &= ~cspinmask;
+    spiWrite(c);
+    *csport |= cspinmask;
+  }
+  else {
+    // I2C
+    uint8_t control = 0x40;   // ??
+    Wire.beginTransmission(i2caddr_);
+    Wire.write(control);
+    Wire.write(c);
+    Wire.endTransmission();
+  }
 }
+
 //------------------------------------------------------------------------------
 inline void SSD1306_text::spiWrite(uint8_t c) {
 
